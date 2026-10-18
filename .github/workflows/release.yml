@@ -1,4 +1,4 @@
-name: Linux release
+name: Release
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   linux-x86_64:
@@ -19,24 +19,70 @@ jobs:
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes build-essential pkg-config libxkbcommon-dev libwayland-dev libudev-dev libfontconfig1-dev cmake
+          sudo apt-get install --yes build-essential pkg-config libxkbcommon-dev libwayland-dev cmake
+      - uses: Swatinem/rust-cache@v2
       - name: Build release binary
         run: cargo build --release --locked
       - name: Assemble archive
         run: |
-          mkdir -p dist/spotlight-linux-x86_64/target/release dist/spotlight-linux-x86_64/scripts dist/spotlight-linux-x86_64/assets
-          install -m755 target/release/spotlight dist/spotlight-linux-x86_64/target/release/spotlight
-          install -m755 scripts/install.sh scripts/cosmic-shortcut.py dist/spotlight-linux-x86_64/scripts/
-          install -m644 assets/io.github.Maglcite.Spotlight.svg dist/spotlight-linux-x86_64/assets/
-          install -m644 LICENSE README.md dist/spotlight-linux-x86_64/
+          root=dist/spotlight-linux-x86_64
+          mkdir -p "$root/target/release" "$root/scripts" "$root/assets"
+          install -m755 target/release/spotlight "$root/target/release/spotlight"
+          install -m755 scripts/install.sh scripts/cosmic-shortcut.py "$root/scripts/"
+          install -m644 assets/io.github.Maglcite.Spotlight.svg "$root/assets/"
+          install -m644 LICENSE README.md "$root/"
           tar -czf spotlight-linux-x86_64.tar.gz -C dist spotlight-linux-x86_64
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: spotlight-linux-x86_64
           path: spotlight-linux-x86_64.tar.gz
-      - name: Publish tagged release asset
-        if: startsWith(github.ref, 'refs/tags/')
+          if-no-files-found: error
+
+  windows-x86_64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.93'
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binary
+        run: cargo build --release --locked
+      - name: Assemble archive
+        shell: pwsh
+        run: |
+          $root = 'dist/spotlight-windows-x86_64'
+          New-Item -ItemType Directory -Force -Path "$root/scripts", "$root/assets" | Out-Null
+          Copy-Item target/release/spotlight.exe "$root/"
+          Copy-Item scripts/install.ps1 "$root/scripts/"
+          Copy-Item assets/io.github.Maglcite.Spotlight.svg "$root/assets/"
+          Copy-Item LICENSE, README.md "$root/"
+          Compress-Archive -Path $root -DestinationPath spotlight-windows-x86_64.zip -Force
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotlight-windows-x86_64
+          path: spotlight-windows-x86_64.zip
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux-x86_64, windows-x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" spotlight-linux-x86_64.tar.gz --generate-notes
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --generate-notes \
+            artifacts/spotlight-linux-x86_64.tar.gz \
+            artifacts/spotlight-windows-x86_64.zip

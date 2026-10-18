@@ -3,13 +3,12 @@ name = "spotlight"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.93"
-description = "A fast, translucent launcher and read-only AI assistant for COSMIC"
+description = "A fast, translucent launcher and read-only AI assistant for Linux and Windows"
 license = "MIT"
 repository = "https://github.com/Maglcite/spotlight"
 
 [dependencies]
-libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "e1f2cd2e52226aa50d59bb2cd6d43ffe290106ed", default-features = false, features = ["winit", "tokio", "wayland", "single-instance", "dbus-config", "a11y"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "macros", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "macros", "io-util", "signal"] }
 tokio-util = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -18,14 +17,31 @@ futures-util = "0.3"
 url = "2"
 dirs = "6"
 ignore = "0.4"
-freedesktop-desktop-entry = "0.8"
-shlex = "1"
 scraper = "0.24"
 regex = "1"
-html-escape = "0.2"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+interprocess = "2"
+iced = { version = "0.14", default-features = false, features = ["wgpu", "tiny-skia", "crisp", "web-colors", "tokio", "x11", "wayland", "svg", "image-without-codecs"] }
+global-hotkey = "0.9"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+freedesktop-desktop-entry = "0.8"
+shlex = "1"
+freedesktop-icons = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
+# zbus-based Secret Service with pure-Rust crypto: no libdbus or OpenSSL headers needed.
+keyring = { version = "3", features = ["async-secret-service", "async-io", "crypto-rust"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Console", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+window-vibrancy = "0.8"
+raw-window-handle = "0.6"
+
+[build-dependencies]
+embed-resource = "3"
 
 [dev-dependencies]
 tempfile = "3"

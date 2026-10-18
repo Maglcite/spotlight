@@ -1,7 +1,6 @@
+use crate::secrets;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 
 pub const APP_ID: &str = "io.github.Maglcite.Spotlight";
 
@@ -92,6 +91,20 @@ pub struct Config {
     pub max_tool_rounds: u8,
     pub debounce_ms: u64,
     pub opacity: f32,
+    /// Global shortcut shown in Settings. On Wayland the compositor owns the
+    /// binding, so this is informational there.
+    pub hotkey: String,
+    /// Start Spotlight in the background at login.
+    pub autostart: bool,
+}
+
+/// The platform's conventional launcher shortcut.
+pub fn default_hotkey() -> &'static str {
+    if cfg!(windows) {
+        "Alt+Space"
+    } else {
+        "Super+Space"
+    }
 }
 
 impl Default for Config {
@@ -107,15 +120,20 @@ impl Default for Config {
             max_tool_rounds: 4,
             debounce_ms: 650,
             opacity: 0.88,
+            hotkey: default_hotkey().into(),
+            autostart: false,
         }
     }
 }
 
 impl Config {
+    /// `~/.config/spotlight/config.json` on Linux (unchanged from earlier
+    /// releases) and `%APPDATA%\spotlight\config.json` on Windows.
     pub fn path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("spotlight/config.json")
+            .join("spotlight")
+            .join("config.json")
     }
 
     pub fn load() -> Result<Self, String> {
@@ -129,13 +147,18 @@ impl Config {
         value.debounce_ms = value.debounce_ms.clamp(250, 3000);
         value.max_tool_rounds = value.max_tool_rounds.clamp(1, 6);
         value.opacity = value.opacity.clamp(0.65, 1.0);
+        if value.hotkey.trim().is_empty() {
+            value.hotkey = default_hotkey().into();
+        }
         Ok(value)
     }
 
     pub fn save(&self) -> Result<(), String> {
         self.validate()?;
         let path = Self::path();
-        std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
         let tmp = path.with_extension("json.tmp");
         std::fs::write(
             &tmp,
@@ -175,27 +198,19 @@ impl Config {
         Ok(())
     }
 
+    /// Resolve the API key: provider environment variable first, then the OS
+    /// keyring (including the legacy `secret-tool` entry on Linux). This may
+    /// block briefly on the keyring, so call it off the UI thread.
     pub fn api_key(&self) -> Result<String, String> {
         if let Ok(value) = std::env::var(self.provider.env_name())
             && !value.trim().is_empty()
         {
             return Ok(value.trim().to_string());
         }
-        if let Ok(output) = Command::new("secret-tool")
-            .args([
-                "lookup",
-                "application",
-                APP_ID,
-                "provider",
-                self.provider.id(),
-            ])
-            .output()
-            && output.status.success()
-        {
-            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !value.is_empty() {
-                return Ok(value);
-            }
+        match secrets::get(self.provider.id()) {
+            Ok(Some(value)) => return Ok(value),
+            Ok(None) => {}
+            Err(error) => tracing::debug!("{error}"),
         }
         if self.provider == Provider::Ollama {
             return Ok("ollama".into());
@@ -207,37 +222,17 @@ impl Config {
         ))
     }
 
+    /// Save a key for the current provider in the OS keyring. Blank keys are ignored.
     pub fn store_key(&self, key: &str) -> Result<(), String> {
         if key.trim().is_empty() {
             return Ok(());
         }
-        let mut child = Command::new("secret-tool")
-            .args([
-                "store",
-                "--label=Spotlight AI API key",
-                "application",
-                APP_ID,
-                "provider",
-                self.provider.id(),
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|_| {
-                "Install libsecret's secret-tool to save API keys securely.".to_string()
-            })?;
-        child
-            .stdin
-            .take()
-            .ok_or("Could not access keyring input")?
-            .write_all(key.trim().as_bytes())
-            .map_err(|e| e.to_string())?;
-        if child.wait().map_err(|e| e.to_string())?.success() {
-            Ok(())
-        } else {
-            Err("The desktop keyring could not save your key. Unlock it and try again.".into())
-        }
+        secrets::set(self.provider.id(), key)
+    }
+
+    /// Forget the stored key for the current provider.
+    pub fn clear_key(&self) -> Result<(), String> {
+        secrets::delete(self.provider.id())
     }
 }
 
@@ -249,7 +244,18 @@ mod tests {
         let config = Config::default();
         let value = serde_json::to_string(&config).unwrap();
         assert!(!value.contains("api_key"));
+        assert!(!value.to_lowercase().contains("secret"));
         assert!(serde_json::from_str::<Config>(&value).is_ok());
+    }
+
+    #[test]
+    fn configs_from_older_releases_still_load() {
+        let old = r#"{"provider":"OpenAI","model":"gpt","base_url":"https://api.openai.com/v1","opacity":0.9}"#;
+        let config: Config = serde_json::from_str(old).unwrap();
+        assert_eq!(config.provider, Provider::OpenAI);
+        assert_eq!(config.hotkey, default_hotkey());
+        assert!(!config.autostart);
+        assert_eq!(config.debounce_ms, 650);
     }
     #[test]
     fn endpoint_validation() {
