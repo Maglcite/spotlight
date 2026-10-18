@@ -1,0 +1,39 @@
+[package]
+name = "spotlight"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+description = "A fast, translucent launcher and read-only AI assistant for COSMIC"
+license = "MIT"
+repository = "https://github.com/Maglcite/spotlight"
+
+[dependencies]
+libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "e1f2cd2e52226aa50d59bb2cd6d43ffe290106ed", default-features = false, features = ["winit", "tokio", "wayland", "single-instance", "dbus-config", "a11y"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "macros", "io-util"] }
+tokio-util = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+futures-util = "0.3"
+url = "2"
+dirs = "6"
+ignore = "0.4"
+freedesktop-desktop-entry = "0.8"
+shlex = "1"
+scraper = "0.24"
+regex = "1"
+html-escape = "0.2"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 8
