@@ -20,6 +20,7 @@ jobs:
           sudo apt-get install --yes build-essential pkg-config libxkbcommon-dev libwayland-dev libudev-dev libfontconfig1-dev cmake
       - name: Check formatting
         run: cargo fmt --check
+      - uses: Swatinem/rust-cache@v2
       - name: Run Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Run tests

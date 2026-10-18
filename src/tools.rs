@@ -401,11 +401,11 @@ async fn get_bounded(mut url: Url) -> Result<(Url, String, String), String> {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_lowercase();
-        if !content_type.is_empty()
-            && !(content_type.contains("text/")
-                || content_type.contains("html")
-                || content_type.contains("json")
-                || content_type.contains("xml"))
+        if !(content_type.is_empty()
+            || content_type.contains("text/")
+            || content_type.contains("html")
+            || content_type.contains("json")
+            || content_type.contains("xml"))
         {
             return Err("This tool only reads text pages.".to_string());
         }

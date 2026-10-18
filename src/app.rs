@@ -574,7 +574,7 @@ impl Spotlight {
         let key = text_input::secure_input(
             "Paste a new key to save in your desktop keyring",
             &self.key_input,
-            Some(Message::Noop),
+            None,
             true,
         )
         .on_input(Message::ApiKey)
