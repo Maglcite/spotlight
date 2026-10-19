@@ -64,7 +64,7 @@ fn launch(args: &Args) -> Result<(), String> {
         }
         Err(error) => return Err(error.to_string()),
     };
-    ui::run(initial, commands).map_err(|error| error.to_string())
+    ui::run(initial, commands)
 }
 
 fn load_config() -> Config {

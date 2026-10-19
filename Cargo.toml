@@ -33,6 +33,12 @@ freedesktop-icons = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
 # zbus-based Secret Service with pure-Rust crypto: no libdbus or OpenSSL headers needed.
 keyring = { version = "3", features = ["async-secret-service", "async-io", "crypto-rust"] }
+# wlr-layer-shell surfaces for Wayland compositors (COSMIC, sway, ...); see src/ui/wayland.rs.
+iced_layershell = "0.19.1"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+# iced_exdevtools (pulled in by iced_layershell) does not compile against winit-core beta.3.
+winit-core = "=0.31.0-beta.2"
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

@@ -7,6 +7,8 @@ pub mod icons;
 pub mod settings;
 pub mod style;
 pub mod view;
+#[cfg(target_os = "linux")]
+mod wayland;
 
 #[cfg(windows)]
 use crate::platform;
@@ -30,7 +32,7 @@ use spotlight::{
 };
 use std::{
     path::PathBuf,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{Arc, LazyLock, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -59,14 +61,37 @@ pub static MODEL_INPUT: LazyLock<Id> = LazyLock::new(|| Id::new("spotlight-model
 static INITIAL: Mutex<Option<ipc::Command>> = Mutex::new(None);
 static IPC: Mutex<Option<UnboundedReceiver<ipc::Command>>> = Mutex::new(None);
 
+/// How the launcher's surfaces are created. Chosen once in [`run`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Backend {
+    /// Ordinary winit windows (Windows, macOS, Linux on X11 or non-layer-shell Wayland).
+    Winit,
+    /// wlr-layer-shell overlay surfaces. Wayland ignores requested window
+    /// positions, but a layer surface with no anchors is centered by the
+    /// compositor. `max_height` is the largest surface height for this output.
+    #[cfg(target_os = "linux")]
+    LayerShell { max_height: f32 },
+}
+
+static BACKEND: OnceLock<Backend> = OnceLock::new();
+
+fn backend() -> Backend {
+    BACKEND.get().copied().unwrap_or(Backend::Winit)
+}
+
 /// Start the daemon. `initial` is the command the launching invocation asked
 /// for (`None` for `--daemon`, which starts hidden).
 pub fn run(
     initial: Option<ipc::Command>,
     commands: UnboundedReceiver<ipc::Command>,
-) -> iced::Result {
+) -> Result<(), String> {
     *lock(&INITIAL) = initial;
     *lock(&IPC) = Some(commands);
+    #[cfg(target_os = "linux")]
+    if let Some(max_height) = wayland::probe() {
+        let _ = BACKEND.set(Backend::LayerShell { max_height });
+        return wayland::run();
+    }
     iced::daemon(Spotlight::boot, Spotlight::update, Spotlight::view)
         .title(|_: &Spotlight, _: window::Id| "Spotlight".to_string())
         .theme(|_: &Spotlight, _: window::Id| style::theme())
@@ -74,6 +99,7 @@ pub fn run(
         .subscription(Spotlight::subscription)
         .antialiasing(true)
         .run()
+        .map_err(|error| error.to_string())
 }
 
 fn lock<T>(slot: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -86,6 +112,9 @@ pub enum Page {
     Settings,
 }
 
+// On Linux the layer-shell backend turns some variants into compositor
+// requests (see `Backend::LayerShell`), so this adds the macro's variants there.
+#[cfg_attr(target_os = "linux", iced_layershell::to_layer_message(multi))]
 #[derive(Clone, Debug)]
 pub enum Message {
     Command(ipc::Command),
@@ -205,10 +234,9 @@ impl Spotlight {
         match message {
             Message::Command(command) => self.command(command),
             Message::HotkeyPressed => self.toggle(),
-            Message::WindowOpened(id) if self.window == Some(id) => Task::batch([
-                window::run(id, prepare_window).map(Message::WindowPrepared),
-                self.focus(),
-            ]),
+            Message::WindowOpened(id) if self.window == Some(id) => {
+                Task::batch([self.prepare(id), self.focus()])
+            }
             Message::WindowOpened(_) => Task::none(),
             Message::WindowPrepared(backdrop) => {
                 self.backdrop = backdrop;
@@ -330,6 +358,10 @@ impl Spotlight {
                 Task::none()
             }
             Message::Noop => Task::none(),
+            // Layer-shell requests are converted before `update` sees them, so
+            // these variants never arrive here on Linux.
+            #[cfg(target_os = "linux")]
+            _ => Task::none(),
         }
     }
 
@@ -376,9 +408,9 @@ impl Spotlight {
         self.answer = Answer::default();
         self.answer_canceled = false;
         self.error = None;
-        let (id, open) = window::open(window_settings(page_height(page)));
+        let (id, open) = open_window(page_height(page));
         self.window = Some(id);
-        let mut tasks = vec![open.map(Message::WindowOpened)];
+        let mut tasks = vec![open];
         if self.indexed_at.elapsed() > INDEX_MAX_AGE && !self.indexing {
             tasks.push(self.index());
         }
@@ -579,9 +611,18 @@ impl Spotlight {
         if self.page == page {
             return Task::none();
         }
-        let (id, open) = window::open(window_settings(page_height(page)));
+        let (id, open) = open_window(page_height(page));
         self.window = Some(id);
-        Task::batch([window::close(old), open.map(Message::WindowOpened)])
+        Task::batch([window::close(old), open])
+    }
+
+    /// A shown winit window gets its native backdrop. Layer surfaces have none.
+    fn prepare(&self, id: window::Id) -> Task<Message> {
+        match backend() {
+            Backend::Winit => window::run(id, prepare_window).map(Message::WindowPrepared),
+            #[cfg(target_os = "linux")]
+            Backend::LayerShell { .. } => Task::none(),
+        }
     }
 
     fn save(&mut self) -> Task<Message> {
@@ -685,6 +726,12 @@ fn keyboard_event(event: iced::Event, _: event::Status, id: window::Id) -> Optio
             _ => None,
         },
         iced::Event::Window(window::Event::Unfocused) => Some(Message::Unfocused(id)),
+        // Layer surfaces have no open task to report their id, so use the event.
+        iced::Event::Window(window::Event::Opened { .. })
+            if !matches!(backend(), Backend::Winit) =>
+        {
+            Some(Message::WindowOpened(id))
+        }
         _ => None,
     }
 }
@@ -693,6 +740,20 @@ fn page_height(page: Page) -> f32 {
     match page {
         Page::Search => HEIGHT,
         Page::Settings => SETTINGS_HEIGHT,
+    }
+}
+
+/// Create the surface for the launcher at `height` logical pixels. Its id is
+/// known straight away; winit reports it as `WindowOpened` once shown, and
+/// layer surfaces send the `Opened` window event (see `keyboard_event`).
+fn open_window(height: f32) -> (window::Id, Task<Message>) {
+    match backend() {
+        Backend::Winit => {
+            let (id, open) = window::open(window_settings(height));
+            (id, open.map(Message::WindowOpened))
+        }
+        #[cfg(target_os = "linux")]
+        Backend::LayerShell { max_height } => wayland::open(height.min(max_height)),
     }
 }
 
