@@ -77,17 +77,40 @@ fn required_string<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
 
 fn within_roots(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, String> {
     let canonical = fs::canonicalize(path).map_err(|_| "File is unavailable.".to_string())?;
-    if is_forbidden_path(&canonical) {
-        return Err("Hidden, ignored, or sensitive files cannot be read.".to_string());
-    }
-    let allowed = roots
+    // Both sides are canonical (on Windows that means the same `\\?\` verbatim
+    // form), so a component-wise prefix check is reliable. Only the part below
+    // the root is policed, so an explicitly configured hidden root still works.
+    let relative = roots
         .iter()
         .filter_map(|root| fs::canonicalize(root).ok())
-        .any(|root| canonical.starts_with(root));
-    if !allowed {
-        return Err("File is outside the configured search roots.".to_string());
+        .find_map(|root| strip_root(&canonical, &root))
+        .ok_or_else(|| "File is outside the configured search roots.".to_string())?;
+    if is_forbidden_path(&relative) {
+        return Err("Hidden, ignored, or sensitive files cannot be read.".to_string());
     }
     Ok(canonical)
+}
+
+/// `path` relative to `root` if it lies inside it. Windows paths compare
+/// case-insensitively, like the filesystem.
+fn strip_root(path: &Path, root: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let mut path_parts = path.components();
+        for root_part in root.components() {
+            let part = path_parts.next()?;
+            let lower =
+                |c: std::path::Component<'_>| c.as_os_str().to_string_lossy().to_lowercase();
+            if lower(part) != lower(root_part) {
+                return None;
+            }
+        }
+        Some(path_parts.as_path().to_path_buf())
+    }
+    #[cfg(not(windows))]
+    {
+        path.strip_prefix(root).ok().map(Path::to_path_buf)
+    }
 }
 
 fn resolve_requested(
@@ -123,13 +146,19 @@ fn resolve_requested(
 }
 
 fn is_forbidden_path(path: &Path) -> bool {
+    use std::path::Component;
     for component in path.components() {
-        let s = component.as_os_str().to_string_lossy().to_lowercase();
+        let Component::Normal(part) = component else {
+            continue;
+        };
+        let s = part.to_string_lossy().to_lowercase();
         if s.starts_with('.')
             || matches!(
                 s.as_str(),
                 "node_modules" | "target" | "vendor" | "proc" | "sys" | "dev"
             )
+            // Windows keeps browser profiles and app tokens under AppData.
+            || cfg!(windows) && matches!(s.as_str(), "appdata" | "$recycle.bin")
         {
             return true;
         }
@@ -527,6 +556,22 @@ mod tests {
             "/tmp/project/client-secret.txt"
         )));
         assert!(!is_forbidden_path(Path::new("/tmp/project/src/main.rs")));
+    }
+
+    #[test]
+    fn root_prefix_is_component_wise() {
+        let root = std::env::temp_dir().join("spotlight-root");
+        let inside = root.join("docs").join("a.txt");
+        let sibling = std::env::temp_dir()
+            .join("spotlight-root-other")
+            .join("a.txt");
+        assert_eq!(
+            strip_root(&inside, &root).unwrap(),
+            Path::new("docs").join("a.txt")
+        );
+        assert!(strip_root(&sibling, &root).is_none());
+        #[cfg(windows)]
+        assert!(strip_root(Path::new(r"C:\USERS\Me\x.txt"), Path::new(r"c:\users\me")).is_some());
     }
 
     #[test]

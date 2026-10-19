@@ -5,9 +5,12 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/install.sh [--autostart] [--no-build] [--help]
 
-Build and install Spotlight in the current user's ~/.local directories.
-Pass --autostart to start the background daemon at COSMIC session login.
+Build and install Spotlight on Linux in the current user's ~/.local directories.
+Pass --autostart to start the background daemon at login on any desktop that
+supports XDG autostart (COSMIC, GNOME, KDE Plasma, Xfce and others).
 Pass --no-build to install an existing target/release/spotlight binary.
+Keyboard shortcuts are not changed; bind a desktop shortcut to
+"spotlight --toggle" on Wayland (see README.md).
 USAGE
 }
 
@@ -57,6 +60,9 @@ Terminal=false
 Categories=Utility;Search;
 StartupWMClass=io.github.Maglcite.Spotlight
 DESKTOP
+  if [[ "$action" == daemon ]]; then
+    printf 'X-GNOME-Autostart-enabled=true\n' >> "$path"
+  fi
 }
 
 if [[ "$autostart" == true && -e "$autostart_file" ]]; then

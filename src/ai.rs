@@ -91,7 +91,13 @@ async fn run_inner(
 ) -> Result<(), String> {
     let key = match config.provider {
         Provider::Ollama => String::new(),
-        _ => config.api_key()?,
+        _ => {
+            // Keyring lookups can block on D-Bus or the credential manager.
+            let lookup = config.clone();
+            tokio::task::spawn_blocking(move || lookup.api_key())
+                .await
+                .map_err(|_| "Could not read the API key.".to_string())??
+        }
     };
     let client = API_CLIENT.as_ref().map_err(Clone::clone)?;
     let tools = tools::definitions(&config);

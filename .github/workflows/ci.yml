@@ -5,9 +5,17 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  linux:
-    runs-on: ubuntu-24.04
+  check:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -15,10 +23,12 @@ jobs:
           toolchain: '1.93'
           components: rustfmt, clippy
       - name: Install native build dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes build-essential pkg-config libxkbcommon-dev libwayland-dev libudev-dev libfontconfig1-dev cmake
+          sudo apt-get install --yes build-essential pkg-config libxkbcommon-dev libwayland-dev cmake
       - name: Check formatting
+        if: runner.os == 'Linux'
         run: cargo fmt --check
       - uses: Swatinem/rust-cache@v2
       - name: Run Clippy
