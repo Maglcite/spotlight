@@ -26,6 +26,7 @@ use wayland_protocols::xdg::xdg_output::zv1::client::{
 /// page still fits on smaller screens.
 const OUTPUT_FRACTION: f32 = 0.85;
 const NAMESPACE: &str = "Spotlight";
+const KEEPALIVE_NAMESPACE: &str = "Spotlight-keepalive";
 
 /// Returns the largest surface height for the outputs when this session can
 /// use layer-shell surfaces, and `None` otherwise (so winit is used).
@@ -56,6 +57,23 @@ pub fn probe() -> Option<f32> {
 /// compositor.
 pub fn open(height: f32) -> (window::Id, iced::Task<Message>) {
     Message::layershell_open(layer_settings(height))
+}
+
+/// Open a 1x1 transparent background keepalive surface so `iced_layershell`
+/// never destroys its `wgpu` compositor, shader pipelines, or EGL display when
+/// the main launcher window is closed.
+pub fn open_keepalive() -> (window::Id, iced::Task<Message>) {
+    Message::layershell_open(NewLayerShellSettings {
+        size: Some((1, 1)),
+        layer: Layer::Background,
+        anchor: Anchor::empty(),
+        exclusive_zone: Some(-1),
+        margin: None,
+        keyboard_interactivity: KeyboardInteractivity::None,
+        output_option: OutputOption::Active,
+        events_transparent: true,
+        namespace: Some(KEEPALIVE_NAMESPACE.into()),
+    })
 }
 
 /// Run the launcher daemon on layer-shell surfaces. Shares the state, update

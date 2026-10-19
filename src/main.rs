@@ -17,6 +17,29 @@ use std::{io::Write, process::ExitCode, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 fn main() -> ExitCode {
+    // Fast-path for `spotlight --toggle` / `-t`: forward directly to the running
+    // daemon's IPC socket before initializing tracing regexes or clap parsing.
+    {
+        let mut raw_args = std::env::args_os();
+        let _ = raw_args.next();
+        if let (Some(arg), None) = (raw_args.next(), raw_args.next())
+            && (arg == "--toggle" || arg == "-t")
+            && ipc::send_to_running(&ipc::Command::Toggle).unwrap_or(false)
+        {
+            return ExitCode::SUCCESS;
+        }
+    }
+
+    // Under Wayland compositors that lack linux-dmabuf (such as purpwm or nested Gamescope),
+    // wgpu's Vulkan WSI fails with VK_ERROR_SURFACE_LOST_KHR after a ~500ms timeout stall.
+    // Defaulting to the OpenGL backend on Linux avoids this delay completely on every toggle.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+        unsafe {
+            std::env::set_var("WGPU_BACKEND", "gl");
+        }
+    }
+
     // The Windows binary is a GUI app, so borrow the terminal's console (if
     // any) before anything prints, including clap's --help and --version.
     #[cfg(windows)]

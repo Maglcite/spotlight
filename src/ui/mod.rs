@@ -19,7 +19,7 @@ use crate::{
 use iced::{
     Element, Size, Subscription, Task, event,
     keyboard::{self, Key, key::Named},
-    widget::{Id, operation, scrollable},
+    widget::{Id, Space, operation, scrollable},
     window,
 };
 use icons::IconMap;
@@ -163,6 +163,10 @@ struct Answer {
 
 pub struct Spotlight {
     window: Option<window::Id>,
+    /// Persistent 1x1 background layer surface on Wayland so `iced_layershell`
+    /// keeps the `wgpu` compositor, shader pipelines, font system, and EGL
+    /// display initialized when the main launcher window is closed.
+    keepalive: Option<window::Id>,
     backdrop: bool,
     page: Page,
     config: Config,
@@ -194,6 +198,7 @@ impl Spotlight {
         let hotkey_error = hotkey.register(&config.hotkey).err();
         let mut app = Self {
             window: None,
+            keepalive: None,
             backdrop: false,
             page: Page::Search,
             draft: Draft::new(&config),
@@ -214,6 +219,12 @@ impl Spotlight {
             error: load_error.or(hotkey_error),
         };
         let mut tasks = vec![app.index()];
+        #[cfg(target_os = "linux")]
+        if matches!(backend(), Backend::LayerShell { .. }) {
+            let (id, open) = wayland::open_keepalive();
+            app.keepalive = Some(id);
+            tasks.push(open);
+        }
         if let Some(command) = lock(&INITIAL).take() {
             tasks.push(Task::done(Message::Command(command)));
         }
@@ -243,6 +254,7 @@ impl Spotlight {
                 Task::none()
             }
             Message::CloseRequested(id) if self.window == Some(id) => self.hide(),
+            Message::CloseRequested(id) if self.keepalive == Some(id) => Task::none(),
             Message::CloseRequested(id) => window::close(id),
             Message::Unfocused(id) if self.window == Some(id) => self.hide(),
             Message::Unfocused(_) => Task::none(),
@@ -365,7 +377,10 @@ impl Spotlight {
         }
     }
 
-    fn view(&self, _id: window::Id) -> Element<'_, Message> {
+    fn view(&self, id: window::Id) -> Element<'_, Message> {
+        if self.keepalive == Some(id) {
+            return Space::new().into();
+        }
         view::render(self)
     }
 
@@ -601,9 +616,8 @@ impl Spotlight {
         Task::batch([resize, self.focus()])
     }
 
-    /// Give the open window the height of `page`. Windows cannot be resized in
-    /// place on Wayland, so the window is replaced by one of the new size. A
-    /// window that is not open yet is sized by `reveal`.
+    /// Give the open window the height of `page`. Layer-shell surfaces resize in
+    /// place; winit windows are replaced by one of the new size.
     fn resize_for(&mut self, page: Page) -> Task<Message> {
         let Some(old) = self.window else {
             return Task::none();
@@ -611,9 +625,21 @@ impl Spotlight {
         if self.page == page {
             return Task::none();
         }
-        let (id, open) = open_window(page_height(page));
-        self.window = Some(id);
-        Task::batch([window::close(old), open])
+        match backend() {
+            #[cfg(target_os = "linux")]
+            Backend::LayerShell { max_height } => {
+                let h = page_height(page).min(max_height).round() as u32;
+                Task::done(Message::SizeChange {
+                    id: old,
+                    size: (WIDTH as u32, h),
+                })
+            }
+            Backend::Winit => {
+                let (id, open) = open_window(page_height(page));
+                self.window = Some(id);
+                Task::batch([window::close(old), open])
+            }
+        }
     }
 
     /// A shown winit window gets its native backdrop. Layer surfaces have none.
@@ -657,6 +683,7 @@ impl Spotlight {
     fn test_state() -> Self {
         Self {
             window: None,
+            keepalive: None,
             backdrop: false,
             page: Page::Search,
             config: Config::default(),

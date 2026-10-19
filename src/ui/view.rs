@@ -6,10 +6,7 @@ use super::{
     icons::{Glyph, Icon},
     question_prompt, settings, style,
 };
-use iced::widget::{
-    Space, button, column, container, image, row, scrollable, svg, svg as svg_style, text,
-    text_input,
-};
+use iced::widget::{Space, button, column, container, image, row, scrollable, text, text_input};
 use iced::{Alignment, Element, Length};
 use spotlight::search::{ResultKind, SearchResult};
 
@@ -210,10 +207,6 @@ fn result_row<'a>(
 fn result_icon<'a>(app: &'a Spotlight, result: &'a SearchResult) -> Element<'a, Message> {
     let resolved = result.icon.as_ref().and_then(|name| app.icons.get(name));
     match resolved {
-        Some(Icon::Svg(handle)) => svg(handle.clone())
-            .width(ICON_SIZE)
-            .height(ICON_SIZE)
-            .into(),
         Some(Icon::Raster(handle)) => image(handle.clone())
             .width(ICON_SIZE)
             .height(ICON_SIZE)
@@ -300,11 +293,7 @@ fn answer(app: &Spotlight) -> Element<'_, Message> {
 }
 
 fn glyph_sized<'a>(glyph: Glyph, size: f32, color: iced::Color) -> Element<'a, Message> {
-    svg(glyph.handle())
-        .width(size)
-        .height(size)
-        .style(move |_, _| svg_style::Style { color: Some(color) })
-        .into()
+    image(glyph.handle(color)).width(size).height(size).into()
 }
 
 fn rule<'a>() -> Element<'a, Message> {

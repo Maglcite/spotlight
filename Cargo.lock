@@ -4779,6 +4779,7 @@ dependencies = [
  "raw-window-handle",
  "regex",
  "reqwest",
+ "resvg",
  "scraper",
  "serde",
  "serde_json",
