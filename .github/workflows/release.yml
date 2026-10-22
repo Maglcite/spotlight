@@ -81,8 +81,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --generate-notes \
-            artifacts/spotlight-linux-x86_64.tar.gz \
-            artifacts/spotlight-windows-x86_64.zip
+          assets=(artifacts/spotlight-linux-x86_64.tar.gz artifacts/spotlight-windows-x86_64.zip)
+          # Upload to an existing release (e.g. one drafted by hand) instead of failing.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes "${assets[@]}"
+          fi

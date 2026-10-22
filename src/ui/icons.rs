@@ -18,6 +18,8 @@ const RASTER_PX: u32 = 56;
 /// Pre-rasterized RGBA icon handle.
 #[derive(Clone, Debug)]
 pub enum Icon {
+    // Only built on Linux, where app icons come from the icon theme.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Raster(image::Handle),
 }
 
@@ -40,8 +42,10 @@ pub enum Glyph {
     Web,
 }
 
-static GLYPH_CACHE: LazyLock<Mutex<HashMap<(Glyph, [u8; 4]), image::Handle>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Rasterized glyphs keyed by glyph and RGBA tint.
+type GlyphCache = HashMap<(Glyph, [u8; 4]), image::Handle>;
+
+static GLYPH_CACHE: LazyLock<Mutex<GlyphCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 impl Glyph {
     pub fn handle(self, color: Color) -> image::Handle {
@@ -83,13 +87,13 @@ fn rasterize_svg_bytes(
     let tx = (target_px as f32 - w * scale) * 0.5;
     let ty = (target_px as f32 - h * scale) * 0.5;
     let transform = tiny_skia::Transform::from_scale(scale, scale).post_translate(tx, ty);
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         resvg::render(&tree, transform, &mut pixmap.as_mut());
     }))
     .ok()?;
     let mut rgba = pixmap.take();
     if let Some([r, g, b, _]) = tint {
-        for px in rgba.chunks_exact_mut(4) {
+        for px in rgba.as_chunks_mut::<4>().0 {
             let a = px[3];
             if a > 0 {
                 // Premultiplied -> straight RGBA for `image::Handle::from_rgba`
@@ -100,7 +104,7 @@ fn rasterize_svg_bytes(
         }
     } else {
         // Convert tiny_skia premultiplied RGBA to straight RGBA expected by iced
-        for px in rgba.chunks_exact_mut(4) {
+        for px in rgba.as_chunks_mut::<4>().0 {
             let a = px[3] as u16;
             if a > 0 && a < 255 {
                 px[0] = ((px[0] as u16 * 255 + a / 2) / a).min(255) as u8;
