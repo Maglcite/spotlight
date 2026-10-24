@@ -1,6 +1,6 @@
 # Spotlight
 
-Spotlight is an experimental native launcher and read-only AI assistant for Windows and Linux. It is built with Rust and iced, with a compact, centered search window and a translucent purple interface. Rendering uses wgpu, with a tiny-skia software fallback; Spotlight does not embed a browser engine.
+Spotlight is an experimental native launcher and read-only AI assistant for Windows and Linux. It is built with Rust and iced, with a compact, centered search window and a translucent purple interface that matches purpwm, including bundled Noto Sans Mono typography. Rendering uses wgpu, with a tiny-skia software fallback; Spotlight does not embed a browser engine.
 
 The interface and integrations are under active development. It is not yet a drop-in replacement for every desktop launcher.
 
@@ -10,6 +10,7 @@ The interface and integrations are under active development. It is not yet a dro
 - Read-only AI assistant with a choice of providers; a query ending in `?` is sent to the assistant
 - Global hotkey (default `Win+Space` on Linux, `Alt+Space` on Windows) on Windows and X11; a desktop shortcut on Wayland
 - A single background instance: later invocations forward their command to it over a local socket (a Unix socket on Linux, a named pipe on Windows)
+- A warm daemon with fast toggling: graphics pipelines stay initialized, while periodic app/file reindexing runs only while the launcher is visible
 - Headless `search` and `ask` subcommands for use from a terminal
 - API keys kept in the system credential store
 
@@ -139,7 +140,7 @@ Only one Spotlight instance runs per user session. If one is already running, `s
 
 ## Search and AI
 
-Spotlight's standard search is intended for quick app and file discovery. Applications come from freedesktop desktop entries on Linux and Start Menu shortcuts on Windows. Its file index contains names and paths under your home directory, not file contents. Hidden directories and common dependency or build directories are excluded. Ordinary web queries open in your default browser using DuckDuckGo. If enabled, the AI `search_files` tool reads indexed text files when called and searches them for matching terms; Spotlight does not keep a separate content index.
+Spotlight's standard search is intended for quick app and file discovery. Applications come from freedesktop desktop entries on Linux and Start Menu shortcuts on Windows. Its file index contains names and paths under your home directory, not file contents; lowercased search keys are precomputed while indexing so queries do not rebuild strings for every file. Hidden directories and common dependency or build directories are excluded. Ordinary web queries open in your default browser using DuckDuckGo. If enabled, the AI `search_files` tool reads indexed text files when called and searches them for matching terms; Spotlight does not keep a separate content index.
 
 AI assistance defaults to OpenCode Go at `https://opencode.ai/zen/go/v1` with the explicitly configured model `deepseek-v4.1-flash`. Store the API key in the system credential store through Settings; `OPENCODE_API_KEY` is also supported as an environment fallback. You can manually select another provider and model in Settings: OpenAI, Anthropic, Gemini, OpenRouter, Ollama, and custom OpenAI-compatible endpoints are supported. AI tools are read-only and limited to searching indexed files, reading files within configured local search roots, web search, and fetching URLs. Web and local file tools have separate switches in Settings. A query ending in `?` is sent to the configured assistant after a 650 ms pause; the pause can be configured.
 
