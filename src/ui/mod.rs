@@ -28,10 +28,9 @@ use spotlight::{
     ai,
     config::Config,
     ipc, launch,
-    search::{self, SearchResult},
+    search::{self, IndexedFile, SearchResult},
 };
 use std::{
-    path::PathBuf,
     sync::{Arc, LazyLock, Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -93,6 +92,7 @@ pub fn run(
         return wayland::run();
     }
     iced::daemon(Spotlight::boot, Spotlight::update, Spotlight::view)
+        .default_font(style::DEFAULT_FONT)
         .title(|_: &Spotlight, _: window::Id| "Spotlight".to_string())
         .theme(|_: &Spotlight, _: window::Id| style::theme())
         .style(|_: &Spotlight, theme: &iced::Theme| style::application(theme))
@@ -133,7 +133,7 @@ pub enum Message {
     Activate(usize),
     Activated(u64, Result<(), String>),
     AppsReady(u64, Arc<Vec<SearchResult>>),
-    FilesReady(u64, Arc<Vec<PathBuf>>),
+    FilesReady(u64, Arc<Vec<IndexedFile>>),
     IconsReady(Arc<IconMap>),
     SearchReady(u64, Vec<SearchResult>),
     Ai(u64, ai::Event),
@@ -176,7 +176,7 @@ pub struct Spotlight {
     results: Vec<SearchResult>,
     selected: usize,
     apps: Arc<Vec<SearchResult>>,
-    files: Arc<Vec<PathBuf>>,
+    files: Arc<Vec<IndexedFile>>,
     icons: Arc<IconMap>,
     indexing: bool,
     index_request: u64,
@@ -218,7 +218,8 @@ impl Spotlight {
             answer_canceled: false,
             error: load_error.or(hotkey_error),
         };
-        let mut tasks = vec![app.index()];
+        let font = iced::font::load(style::BUNDLED_FONT).map(|_| Message::Noop);
+        let mut tasks = vec![font, app.index()];
         #[cfg(target_os = "linux")]
         if matches!(backend(), Backend::LayerShell { .. }) {
             let (id, open) = wayland::open_keepalive();
@@ -343,7 +344,10 @@ impl Spotlight {
                 self.answer.copied = true;
                 iced::clipboard::write(self.answer.text.clone())
             }
-            Message::Refresh if !self.indexing => self.index(),
+            // The every-INDEX_MAX_AGE tick keeps the index fresh only while the
+            // launcher is open; hidden, it would rebuild the index for results
+            // nobody sees. `reveal` still re-indexes stale data when opened.
+            Message::Refresh if self.window.is_some() && !self.indexing => self.index(),
             Message::Refresh => Task::none(),
             Message::Field(edit) => {
                 self.draft.apply(edit);
@@ -895,5 +899,19 @@ mod tests {
         app.query = "fire".into();
         let _ = app.update(Message::SearchReady(4, Vec::new()));
         assert!(app.results.is_empty());
+    }
+
+    #[test]
+    fn periodic_refresh_only_reindexes_while_open_and_idle() {
+        let mut app = Spotlight::test_state();
+        let _ = app.update(Message::Refresh);
+        assert!(!app.indexing, "hidden windows must not re-index");
+
+        app.window = Some(window::Id::unique());
+        let _ = app.update(Message::Refresh);
+        assert!(app.indexing, "an open window refreshes on the timer");
+
+        let _ = app.update(Message::Refresh);
+        assert!(app.indexing, "an in-flight index is not restarted");
     }
 }

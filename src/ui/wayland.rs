@@ -86,6 +86,7 @@ pub fn run() -> Result<(), String> {
         Spotlight::view,
     )
     .subscription(Spotlight::subscription)
+    .default_font(super::style::DEFAULT_FONT)
     .theme(|_: &Spotlight, _: window::Id| style::theme())
     .style(|_: &Spotlight, theme: &iced::Theme| style::application(theme))
     .settings(Settings {

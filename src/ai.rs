@@ -2,13 +2,13 @@
 
 use crate::{
     config::{Config, Provider},
+    search::IndexedFile,
     tools,
 };
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -51,7 +51,7 @@ struct ToolCall {
 pub async fn run(
     prompt: String,
     config: Config,
-    files: Arc<Vec<PathBuf>>,
+    files: Arc<Vec<IndexedFile>>,
     tx: UnboundedSender<Event>,
     cancel: CancellationToken,
 ) {
@@ -76,7 +76,7 @@ struct Harness<'a> {
     config: &'a Config,
     key: &'a str,
     client: &'a reqwest::Client,
-    files: &'a [PathBuf],
+    files: &'a [IndexedFile],
     definitions: &'a [Value],
     tx: &'a UnboundedSender<Event>,
     cancel: &'a CancellationToken,
@@ -85,7 +85,7 @@ struct Harness<'a> {
 async fn run_inner(
     prompt: String,
     config: Config,
-    files: Arc<Vec<PathBuf>>,
+    files: Arc<Vec<IndexedFile>>,
     tx: &UnboundedSender<Event>,
     cancel: &CancellationToken,
 ) -> Result<(), String> {
@@ -752,8 +752,8 @@ mod tests {
             .prefix("spotlight-project-")
             .tempdir()
             .unwrap();
-        let file = root.path().join("notes.txt");
-        std::fs::write(&file, "the needle is in this local note").unwrap();
+        let file = IndexedFile::new(root.path().join("notes.txt"));
+        std::fs::write(&file.path, "the needle is in this local note").unwrap();
         let config = Config {
             base_url: format!("http://{address}/v1"),
             local_tools: true,

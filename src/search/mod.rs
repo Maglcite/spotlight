@@ -13,6 +13,38 @@ pub use apps::discover_apps;
 const MAX_RESULTS: usize = 12;
 const MAX_INDEX_FILES: usize = 250_000;
 
+/// A file from the index together with its precomputed, lowercased search
+/// keys. The original filename and display path are re-derived from `path`
+/// only for files that rank, so a large index does not carry display strings
+/// that almost no query ever shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexedFile {
+    pub path: PathBuf,
+    name_lower: String,
+    display_lower: String,
+}
+
+impl IndexedFile {
+    /// Index one path, shortening the home directory in the display key.
+    pub fn new(path: PathBuf) -> Self {
+        Self::with_home(path, dirs::home_dir().as_deref())
+    }
+
+    pub fn with_home(path: PathBuf, home: Option<&Path>) -> Self {
+        let name_lower = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+        let display_lower = display_path_from(&path, home).to_lowercase();
+        Self {
+            path,
+            name_lower,
+            display_lower,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SearchResult {
     pub id: String,
@@ -40,9 +72,10 @@ pub enum ResultKind {
 
 /// Build a bounded, best-effort file index. `ignore` handles standard ignore
 /// files while these defaults keep hidden and generated trees out of the index.
-pub fn build_file_index(roots: &[PathBuf]) -> Vec<PathBuf> {
+pub fn build_file_index(roots: &[PathBuf]) -> Vec<IndexedFile> {
     let mut files = Vec::new();
     let mut seen = HashSet::new();
+    let home = dirs::home_dir();
     for root in roots {
         if files.len() >= MAX_INDEX_FILES {
             break;
@@ -71,7 +104,7 @@ pub fn build_file_index(roots: &[PathBuf]) -> Vec<PathBuf> {
             }
             let path = entry.into_path();
             if seen.insert(path.clone()) {
-                files.push(path);
+                files.push(IndexedFile::with_home(path, home.as_deref()));
             }
         }
     }
@@ -154,10 +187,11 @@ fn display_path_from(path: &Path, home: Option<&Path>) -> String {
 
 /// Search the prepared application and file snapshots. The caller can run this
 /// function on a worker thread; it performs no UI or blocking process work.
+/// The query is lowercased once; file candidates are already lowercased keys.
 pub fn query(
     query: &str,
     apps: &[SearchResult],
-    files: &[PathBuf],
+    files: &[IndexedFile],
     web_engine: &str,
 ) -> Vec<SearchResult> {
     let needle = query.trim();
@@ -175,39 +209,25 @@ pub fn query(
         }];
     }
 
+    let needle_lower = needle.to_lowercase();
     let home = dirs::home_dir();
     let mut ranked: Vec<(u8, i32, SearchResult)> = Vec::new();
     for app in apps {
         let score = best_score(
-            needle,
+            &needle_lower,
             &[&app.title, &app.id, &app.subtitle, &app.search_terms],
         );
         if score > 0 {
             offer(&mut ranked, (0, score, app.clone()));
         }
     }
-    for path in files {
+    for file in files {
         // Match the shortened path so the home directory itself (often the
         // user's name) does not make every file match.
-        let display = display_path_from(path, home.as_deref());
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        let score = best_score(needle, &[name.as_ref(), display.as_str()]);
+        let score = score_keys(&needle_lower, &file.name_lower)
+            .max(score_keys(&needle_lower, &file.display_lower));
         if score > 0 {
-            offer(
-                &mut ranked,
-                (
-                    1,
-                    score,
-                    SearchResult {
-                        id: format!("file:{}", path.display()),
-                        title: name.into_owned(),
-                        subtitle: display,
-                        search_terms: String::new(),
-                        icon: None,
-                        kind: ResultKind::File { path: path.clone() },
-                    },
-                ),
-            );
+            offer(&mut ranked, (1, score, file_result(file, home.as_deref())));
         }
     }
 
@@ -231,6 +251,23 @@ pub fn query(
         });
     }
     results
+}
+
+/// Original-cased strings are built only for files that made the ranked list.
+fn file_result(file: &IndexedFile, home: Option<&Path>) -> SearchResult {
+    let path = &file.path;
+    SearchResult {
+        id: format!("file:{}", path.display()),
+        title: path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        subtitle: display_path_from(path, home),
+        search_terms: String::new(),
+        icon: None,
+        kind: ResultKind::File { path: path.clone() },
+    }
 }
 
 fn offer(ranked: &mut Vec<(u8, i32, SearchResult)>, candidate: (u8, i32, SearchResult)) {
@@ -279,34 +316,36 @@ fn web_search_url(query: &str, engine: &str) -> Option<String> {
     Some(url.to_string())
 }
 
-fn best_score(query: &str, candidates: &[&str]) -> i32 {
+fn best_score(query_lower: &str, candidates: &[&str]) -> i32 {
     candidates
         .iter()
-        .map(|candidate| match_score(query, candidate))
+        .map(|candidate| score_keys(query_lower, &candidate.to_lowercase()))
         .max()
         .unwrap_or(0)
 }
 
-/// Deterministic case-insensitive fuzzy score: exact, prefix, word prefix,
-/// contiguous substring, then ordered subsequence.
-fn match_score(query: &str, candidate: &str) -> i32 {
-    let q = query.to_lowercase();
-    let c = candidate.to_lowercase();
+/// Deterministic case-insensitive fuzzy score over text that is already
+/// lowercased: exact, prefix, word prefix, contiguous substring, then ordered
+/// subsequence. File candidates arrive as precomputed keys; app candidates
+/// are lowercased per query by [`best_score`].
+fn score_keys(query_lower: &str, candidate_lower: &str) -> i32 {
+    let q = query_lower;
+    let c = candidate_lower;
     if q.is_empty() {
         return 0;
     }
     if c == q {
         return 10_000;
     }
-    if c.starts_with(&q) {
+    if c.starts_with(q) {
         return 8_000 - c.len().min(1000) as i32;
     }
     if c.split(|ch: char| !ch.is_alphanumeric())
-        .any(|word| word.starts_with(&q))
+        .any(|word| word.starts_with(q))
     {
         return 6_000 - c.len().min(1000) as i32;
     }
-    if let Some(index) = c.find(&q) {
+    if let Some(index) = c.find(q) {
         return 4_000 - index.min(1000) as i32;
     }
     let mut chars = c.chars().enumerate();
@@ -338,7 +377,10 @@ mod tests {
                 desktop: "editor.desktop".into(),
             },
         };
-        let files = vec![PathBuf::from("/tmp/edit.txt"), PathBuf::from("/tmp/other")];
+        let files = [
+            IndexedFile::with_home(PathBuf::from("/tmp/edit.txt"), None),
+            IndexedFile::with_home(PathBuf::from("/tmp/other"), None),
+        ];
         let results = query("edit", &[app], &files, "duckduckgo");
         assert!(matches!(results[0].kind, ResultKind::App { .. }));
         assert!(matches!(results[1].kind, ResultKind::File { .. }));
@@ -346,6 +388,47 @@ mod tests {
             results.last().unwrap().kind,
             ResultKind::Web { .. }
         ));
+    }
+
+    #[test]
+    fn mixed_case_queries_keep_the_exact_ranking_and_original_strings() {
+        let files = [
+            IndexedFile::with_home(PathBuf::from("/tmp/Notes-Archive.TXT"), None),
+            IndexedFile::with_home(PathBuf::from("/tmp/notes.md"), None),
+            IndexedFile::with_home(PathBuf::from("/tmp/OTHER.txt"), None),
+        ];
+        assert_eq!(files[0].name_lower, "notes-archive.txt");
+        assert_eq!(files[0].display_lower, "/tmp/notes-archive.txt");
+
+        let results = query("NOTES", &[], &files, "duckduckgo");
+        let titles: Vec<&str> = results.iter().map(|r| r.title.as_str()).collect();
+        // The shorter prefix hit outranks the longer one; the unrelated file
+        // never makes the list, so it never allocates result strings.
+        assert_eq!(&titles[..2], ["notes.md", "Notes-Archive.TXT"]);
+        assert!(!titles.iter().any(|title| title.contains("OTHER")));
+        // Result strings keep the path's original casing.
+        let archive = results
+            .iter()
+            .find(|r| r.title == "Notes-Archive.TXT")
+            .unwrap();
+        assert_eq!(archive.subtitle, "/tmp/Notes-Archive.TXT");
+        // The web fallback keeps the query text as typed.
+        let web = results.last().unwrap();
+        assert!(web.title.contains("NOTES"));
+    }
+
+    #[test]
+    fn word_prefix_and_subsequence_classes_still_rank_in_order() {
+        let files = [
+            IndexedFile::with_home(PathBuf::from("/tmp/floor-plan.pdf"), None),
+            IndexedFile::with_home(PathBuf::from("/tmp/plan.txt"), None),
+            IndexedFile::with_home(PathBuf::from("/tmp/poland.pdf"), None),
+        ];
+        let results = query("PLAN", &[], &files, "duckduckgo");
+        let titles: Vec<&str> = results.iter().map(|r| r.title.as_str()).collect();
+        // Prefix (plan.txt) beats word prefix (floor-plan.pdf) beats the
+        // ordered-subsequence match (poland.pdf), all case-insensitively.
+        assert_eq!(&titles[..3], ["plan.txt", "floor-plan.pdf", "poland.pdf"]);
     }
 
     #[test]
@@ -375,7 +458,12 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(outside.path(), root.path().join("linked-dir")).unwrap();
         let index = build_file_index(&[root.path().to_path_buf()]);
-        assert_eq!(index, vec![root.path().join("src/main.rs")]);
+        assert_eq!(
+            index.iter().map(|file| &file.path).collect::<Vec<_>>(),
+            vec![&root.path().join("src/main.rs")]
+        );
+        // Keys are precomputed and lowercased at index time.
+        assert_eq!(index[0].name_lower, "main.rs");
     }
 
     #[test]

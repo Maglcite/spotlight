@@ -4,6 +4,7 @@
 //! never as instructions to execute.
 
 use crate::config::Config;
+use crate::search::IndexedFile;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use std::{
@@ -44,7 +45,7 @@ pub async fn call(
     name: &str,
     arguments: &Value,
     config: &Config,
-    indexed_files: &[PathBuf],
+    indexed_files: &[IndexedFile],
 ) -> Result<String, String> {
     match name {
         "search_files" if config.local_tools => {
@@ -116,7 +117,7 @@ fn strip_root(path: &Path, root: &Path) -> Option<PathBuf> {
 fn resolve_requested(
     path: &str,
     roots: &[PathBuf],
-    indexed_files: &[PathBuf],
+    indexed_files: &[IndexedFile],
 ) -> Result<PathBuf, String> {
     let candidate = PathBuf::from(path);
     let mut variants = Vec::new();
@@ -128,16 +129,16 @@ fn resolve_requested(
         variants.extend(
             indexed_files
                 .iter()
-                .filter(|p| p.ends_with(&candidate))
-                .cloned(),
+                .filter(|file| file.path.ends_with(&candidate))
+                .map(|file| file.path.clone()),
         );
     }
     for variant in variants {
         if let Ok(canonical) = within_roots(&variant, roots)
             && (indexed_files.is_empty()
-                || indexed_files
-                    .iter()
-                    .any(|p| fs::canonicalize(p).ok().as_deref() == Some(canonical.as_path())))
+                || indexed_files.iter().any(|file| {
+                    fs::canonicalize(&file.path).ok().as_deref() == Some(canonical.as_path())
+                }))
         {
             return Ok(canonical);
         }
@@ -183,7 +184,11 @@ fn is_forbidden_path(path: &Path) -> bool {
         || matches!(ext.as_str(), "pem" | "key" | "p12" | "pfx" | "keystore")
 }
 
-fn read_file(path: &str, indexed_files: &[PathBuf], roots: &[PathBuf]) -> Result<String, String> {
+fn read_file(
+    path: &str,
+    indexed_files: &[IndexedFile],
+    roots: &[PathBuf],
+) -> Result<String, String> {
     let canonical = resolve_requested(path, roots, indexed_files)?;
     let metadata = fs::metadata(&canonical).map_err(|_| "File is unavailable.".to_string())?;
     if !metadata.is_file() || metadata.len() > FILE_LIMIT as u64 {
@@ -209,7 +214,7 @@ fn read_file(path: &str, indexed_files: &[PathBuf], roots: &[PathBuf]) -> Result
     ))
 }
 
-fn search_files(query: &str, files: &[PathBuf], roots: &[PathBuf]) -> String {
+fn search_files(query: &str, files: &[IndexedFile], roots: &[PathBuf]) -> String {
     let terms: Vec<String> = query.split_whitespace().map(|s| s.to_lowercase()).collect();
     if terms.is_empty() {
         return "No search terms provided.".to_string();
@@ -217,11 +222,11 @@ fn search_files(query: &str, files: &[PathBuf], roots: &[PathBuf]) -> String {
     let mut results = Vec::new();
     let mut scanned_files = 0usize;
     let mut scanned_bytes = 0usize;
-    for path in files {
+    for file in files {
         if scanned_files >= SEARCH_SCAN_FILE_LIMIT || scanned_bytes >= SEARCH_SCAN_BYTE_LIMIT {
             break;
         }
-        let Ok(canonical) = within_roots(path, roots) else {
+        let Ok(canonical) = within_roots(&file.path, roots) else {
             continue;
         };
         let Ok(meta) = fs::metadata(&canonical) else {
@@ -585,7 +590,10 @@ mod tests {
         std::fs::write(&safe, "hello from the project").unwrap();
         std::fs::write(&secret, "SECRET=do-not-read").unwrap();
         let roots = vec![root.path().to_path_buf()];
-        let indexed = vec![safe.clone(), secret.clone()];
+        let indexed = vec![
+            IndexedFile::new(safe.clone()),
+            IndexedFile::new(secret.clone()),
+        ];
         assert!(
             read_file(safe.to_str().unwrap(), &indexed, &roots)
                 .unwrap()
